@@ -1606,6 +1606,7 @@ async function doScan(){
   btn.innerHTML='<span class="spin">&#x21BA;</span> Scanning...';
 
   var hasKey=!!(CFG.anthropicKey&&CFG.anthropicKey.length>10);
+
   var dErr=document.getElementById('d-err');
   var dEmpty=document.getElementById('d-empty');
   var dLoad=document.getElementById('d-loading');
@@ -1617,104 +1618,109 @@ async function doScan(){
   if(dLoad)dLoad.style.display='block';
 
   var shim=document.getElementById('d-shim');
-  if(shim){shim.innerHTML='';for(var _i=0;_i<6;_i++){var _s=document.createElement('div');_s.className='shimmer';_s.style.cssText='height:260px;border-radius:14px;margin-bottom:10px';shim.appendChild(_s);}}
-
-  setNS('Scanning for Solana coins...');
-
-  var coins=[];
-  var errors=[];
-
-  // ── Helper: fetch with CORS proxy fallback ──────────────────
-  async function fetchDex(url){
-    // Try direct first
-    try{
-      var r=await fetchWithTimeout(url,10000);
-      if(r&&r.ok)return await r.json();
-    }catch(e){errors.push('Direct: '+e.message);}
-    // Try allorigins proxy
-    try{
-      var proxy1='https://api.allorigins.win/get?url='+encodeURIComponent(url);
-      var r2=await fetchWithTimeout(proxy1,12000);
-      if(r2&&r2.ok){var d2=await r2.json();if(d2&&d2.contents)return JSON.parse(d2.contents);}
-    }catch(e){errors.push('Proxy1: '+e.message);}
-    // Try corsproxy.io
-    try{
-      var proxy2='https://corsproxy.io/?'+encodeURIComponent(url);
-      var r3=await fetchWithTimeout(proxy2,12000);
-      if(r3&&r3.ok)return await r3.json();
-    }catch(e){errors.push('Proxy2: '+e.message);}
-    return null;
-  }
-
-  // ── Parse DexScreener pair into coin object ─────────────────
-  function parsePair(p,source){
-    if(!p||!p.baseToken)return null;
-    var sym=(p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
-    if(!sym)return null;
-    var price=parseFloat(p.priceUsd||0);
-    if(price<=0)return null;
-    var now=Date.now(),created=p.pairCreatedAt||0;
-    var ageH=created>0?(now-created)/3600000:48;
-    return{
-      symbol:sym,name:p.baseToken.name||sym,
-      contractAddress:p.baseToken.address||'',
-      priceUsd:price,ageHours:Math.max(0,ageH),
-      liquidity:(p.liquidity&&p.liquidity.usd)||0,
-      volume24h:(p.volume&&p.volume.h24)||0,
-      marketCap:parseFloat(p.fdv||0),
-      change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),
-      change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),
-      holders:0,graduated:!!(p.dexId&&p.dexId!=='pumpfun'),
-      source:source||'dexscreener',description:''
-    };
-  }
-
-  function addCoin(coin){
-    if(!coin||coins.some(function(c){return c.symbol===coin.symbol;}))return;
-    coins.push(coin);
-  }
-
-  // ── 1. DexScreener trending Solana pairs ────────────────────
-  setNS('Checking DexScreener...');
-  var d1=await fetchDex('https://api.dexscreener.com/latest/dex/search?q=solana+meme+coin');
-  if(d1&&d1.pairs){d1.pairs.filter(function(p){return p.chainId==='solana';}).slice(0,12).forEach(function(p){addCoin(parsePair(p,'dexscreener'));});}
-
-  // ── 2. Pump.fun new tokens ──────────────────────────────────
-  if(coins.length<6){
-    setNS('Checking Pump.fun...');
-    var d2=await fetchDex('https://api.dexscreener.com/latest/dex/search?q=pump+fun+solana+new');
-    if(d2&&d2.pairs){d2.pairs.filter(function(p){return p.chainId==='solana';}).slice(0,10).forEach(function(p){addCoin(parsePair(p,'pumpfun'));});}
-  }
-
-  // ── 3. Top boosted tokens ───────────────────────────────────
-  if(coins.length<6){
-    setNS('Checking boosted tokens...');
-    var d3=await fetchDex('https://api.dexscreener.com/token-boosts/top/v1');
-    if(d3&&Array.isArray(d3)){
-      var mints=d3.filter(function(t){return t.chainId==='solana'&&t.tokenAddress;}).map(function(t){return t.tokenAddress;}).slice(0,8);
-      if(mints.length){
-        var d3b=await fetchDex('https://api.dexscreener.com/tokens/v1/solana/'+mints.join(','));
-        var pp=d3b?(Array.isArray(d3b)?d3b:(d3b.pairs||[])):[];
-        pp.forEach(function(p){addCoin(parsePair(p,'boosted'));});
-      }
+  if(shim){
+    shim.innerHTML='';
+    for(var _i=0;_i<6;_i++){
+      var _s=document.createElement('div');
+      _s.className='shimmer';
+      _s.style.cssText='height:260px;border-radius:14px;margin-bottom:10px';
+      shim.appendChild(_s);
     }
   }
 
-  // ── 4. AI scan (if Anthropic key set) ──────────────────────
-  if(hasKey){
-    setNS('AI scanning for hot coins...');
+  var coins=[];
+  var log=[];
+
+  // ── SOURCE 1: CoinGecko (browser-safe, no CORS block) ───────
+  setNS('Loading from CoinGecko...');
+  try{
+    var cgUrl='https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=solana-ecosystem&order=volume_desc&per_page=30&page=1&price_change_percentage=1h,24h';
+    var cgR=await fetchWithTimeout(cgUrl,12000);
+    if(cgR&&cgR.ok){
+      var cgData=await cgR.json();
+      if(Array.isArray(cgData)&&cgData.length){
+        cgData.forEach(function(coin){
+          if(!coin.symbol)return;
+          var sym=coin.symbol.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+          if(!sym||coins.some(function(c){return c.symbol===sym;}))return;
+          var h1=0;
+          if(coin.price_change_percentage_1h_in_currency!=null)h1=parseFloat(coin.price_change_percentage_1h_in_currency)||0;
+          coins.push({
+            symbol:sym,
+            name:coin.name||sym,
+            contractAddress:'',
+            priceUsd:parseFloat(coin.current_price)||0,
+            ageHours:72,
+            liquidity:parseFloat(coin.total_volume)||0,
+            volume24h:parseFloat(coin.total_volume)||0,
+            marketCap:parseFloat(coin.market_cap)||0,
+            change1h:h1,
+            change24h:parseFloat(coin.price_change_percentage_24h)||0,
+            holders:0,
+            graduated:true,
+            source:'coingecko',
+            description:''
+          });
+        });
+        log.push('CoinGecko: '+coins.length+' coins');
+      }
+    }
+  }catch(e){log.push('CoinGecko failed: '+e.message);console.warn('CoinGecko:',e);}
+
+  // ── SOURCE 2: CoinGecko trending (extra coins) ───────────────
+  if(coins.length<8){
+    setNS('Loading trending coins...');
     try{
-      var existing=coins.map(function(c){return c.symbol;}).join(', ');
-      var prompt=GEM.enabled
-        ?'Find 8 brand new Solana meme tokens on Pump.fun RIGHT NOW. Under 6h old, under $500K market cap, showing explosive volume. Return ONLY a JSON array, no other text: [{"symbol":"X","name":"X","contractAddress":"x","priceUsd":0.000001,"ageHours":1,"liquidity":15000,"volume24h":50000,"marketCap":80000,"change1h":300,"change24h":900,"holders":100,"graduated":false,"description":"why hot"}]'+(existing?' Exclude: '+existing:'')
-        :'Find 10 trending Solana meme coins on Pump.fun and DexScreener right now with strong momentum. Return ONLY a JSON array, no other text: [{"symbol":"X","name":"X","contractAddress":"x","priceUsd":0.001,"ageHours":5,"liquidity":80000,"volume24h":200000,"marketCap":400000,"change1h":50,"change24h":200,"holders":400,"graduated":true,"description":"why hot"}]'+(existing?' Exclude already found: '+existing:'');
-      var aiTxt=await callClaude(prompt,2000);
+      var tR=await fetchWithTimeout('https://api.coingecko.com/api/v3/search/trending',8000);
+      if(tR&&tR.ok){
+        var tData=await tR.json();
+        var tCoins=(tData&&tData.coins)||[];
+        tCoins.forEach(function(item){
+          var c=item.item||item;
+          if(!c.symbol)return;
+          var sym=c.symbol.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+          if(!sym||coins.some(function(x){return x.symbol===sym;}))return;
+          coins.push({
+            symbol:sym,
+            name:c.name||sym,
+            contractAddress:'',
+            priceUsd:parseFloat((c.data&&c.data.price)||c.price_btc||0),
+            ageHours:24,
+            liquidity:0,
+            volume24h:parseFloat((c.data&&c.data.total_volume)||0),
+            marketCap:parseFloat((c.data&&c.data.market_cap)||0),
+            change1h:0,
+            change24h:parseFloat((c.data&&c.data.price_change_percentage_24h&&c.data.price_change_percentage_24h.usd)||0),
+            holders:0,
+            graduated:true,
+            source:'trending',
+            description:'Trending on CoinGecko'
+          });
+        });
+        log.push('Trending: '+coins.length+' total');
+      }
+    }catch(e){log.push('Trending failed: '+e.message);}
+  }
+
+  // ── SOURCE 3: AI via Anthropic (if key set) ─────────────────
+  if(hasKey){
+    setNS('AI scanning Pump.fun...');
+    try{
+      var existing=coins.slice(0,5).map(function(c){return c.symbol;}).join(', ');
+      var aiPrompt=GEM.enabled
+        ?'List 8 brand-new Solana meme tokens on Pump.fun right now. Under 6 hours old, under $500K market cap. Return ONLY a JSON array with no explanation or markdown: [{"symbol":"TICKER","name":"Full Name","contractAddress":"solana_address_or_empty","priceUsd":0.000001,"ageHours":2,"liquidity":25000,"volume24h":80000,"marketCap":120000,"change1h":250,"change24h":600,"holders":200,"graduated":false,"description":"why hot"}]'
+        :'List 10 hot Solana meme coins trending on Pump.fun and DexScreener right now with high volume. Return ONLY a JSON array with no explanation or markdown: [{"symbol":"TICKER","name":"Full Name","contractAddress":"solana_address_or_empty","priceUsd":0.0001,"ageHours":8,"liquidity":120000,"volume24h":400000,"marketCap":800000,"change1h":45,"change24h":180,"holders":800,"graduated":true,"description":"why hot"}]';
+      var aiTxt=await callClaude(aiPrompt,2000);
       var aiArr=extractArr(aiTxt);
       if(aiArr&&aiArr.length){
+        var added=0;
         aiArr.forEach(function(c){
           var sym=(c.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
-          if(!sym)return;
-          addCoin({symbol:sym,name:c.name||sym,contractAddress:c.contractAddress||'',
+          if(!sym||coins.some(function(x){return x.symbol===sym;}))return;
+          coins.push({
+            symbol:sym,
+            name:c.name||sym,
+            contractAddress:c.contractAddress||c.address||'',
             priceUsd:Math.abs(parseFloat(c.priceUsd)||0.0001),
             ageHours:Math.abs(parseFloat(c.ageHours)||12),
             liquidity:Math.abs(parseFloat(c.liquidity)||10000),
@@ -1723,31 +1729,35 @@ async function doScan(){
             change1h:parseFloat(c.change1h)||0,
             change24h:parseFloat(c.change24h)||0,
             holders:parseInt(c.holders)||0,
-            graduated:!!c.graduated,source:'ai',description:c.description||''});
+            graduated:!!c.graduated,
+            source:'ai',
+            description:c.description||''
+          });
+          added++;
         });
+        log.push('AI: +'+added+' coins');
       }
-    }catch(ae){errors.push('AI: '+ae.message);console.warn('AI scan failed:',ae);}
+    }catch(ae){log.push('AI failed: '+ae.message);console.warn('AI scan:',ae);}
   }
 
   if(dLoad)dLoad.style.display='none';
   btn.disabled=false;
   btn.innerHTML='&#x1F50D; Scan';
 
-  // ── Show results or error ───────────────────────────────────
   if(coins.length===0){
-    var msg='<b>Scan failed — no coins returned.</b><br>';
-    if(!hasKey){
-      msg+='<br>&#x2022; Add an <b>Anthropic API key</b> in <b>Settings → Setup</b> to enable AI scanning — this bypasses any network issues.<br>';
+    if(dErr){
+      dErr.style.display='block';
+      dErr.innerHTML='<b>&#x26A0;&#xFE0F; Scan failed — no coins returned.</b><br><br>'
+        +(hasKey
+          ?'The AI scan also failed. Check your API key in Settings &rarr; Setup.'
+          :'<b>Add a free Anthropic API key</b> in <b>Settings &rarr; Setup</b> to enable AI scanning &mdash; this is the most reliable scan method.<br><br>Get a free key at <a href="https://console.anthropic.com" target="_blank" style="color:var(--accent)">console.anthropic.com</a> &rarr; API Keys &rarr; Create Key')
+        +'<br><br><details><summary style="cursor:pointer;font-size:11px;color:var(--text3)">Debug log</summary><pre style="font-size:10px;color:var(--text3);white-space:pre-wrap">'+log.join('\n')+'</pre></details>';
     }
-    msg+='<br>&#x2022; DexScreener may be temporarily unavailable. Try again in 30 seconds.<br>';
-    msg+='<br><details><summary style="cursor:pointer;color:var(--text3);font-size:11px">Technical details</summary><div style="font-size:10px;color:var(--text3);margin-top:6px">'+errors.join('<br>')+'</div></details>';
-    if(dErr){dErr.style.display='block';dErr.innerHTML=msg;}
     if(dEmpty)dEmpty.style.display='block';
-    setNS('Scan failed — see Discover tab for details');
+    setNS('Scan failed — see error above');
     return;
   }
 
-  // ── Score, sort, render ─────────────────────────────────────
   S.coins=coins;
   S.lastScan=new Date();
   S.coins.forEach(function(c){S.scores[c.symbol]=scoreC(c,S.rugs[c.symbol]||null);});
@@ -1760,19 +1770,21 @@ async function doScan(){
   if(bdEl){bdEl.textContent=S.coins.length;bdEl.style.display='';}
 
   renderCoins();
-  setNS('Found '+S.coins.length+' coins'+(hasKey?' (AI+DexScreener)':' (DexScreener)')+' · '+S.lastScan.toLocaleTimeString());
+  setNS('Found '+S.coins.length+' coins'+(hasKey?' (AI+CoinGecko)':' (CoinGecko)')+' &middot; '+S.lastScan.toLocaleTimeString());
   updateAll();
   if(S.autoBot)runBot();
 
-  // Queue rug checks
-  S.coins.filter(function(c){return c.contractAddress;}).slice(0,12).forEach(function(c,idx){
+  S.coins.filter(function(c){return c.contractAddress;}).slice(0,8).forEach(function(c,idx){
     if(!S.rugs[c.symbol]&&!S.checking[c.symbol]){
-      setTimeout(function(){doRug(c);},900*(idx+1));
+      setTimeout(function(){doRug(c);},1000*(idx+1));
     }
   });
 
   if(!localStorage.getItem('swc_scan_tip')){
-    setTimeout(function(){toast('&#x26A1; Coins with Signal are the top picks — tap one to trade!');try{localStorage.setItem('swc_scan_tip','1');}catch(e){}},1500);
+    setTimeout(function(){
+      toast('&#x26A1; Coins with Signal are the top picks!');
+      try{localStorage.setItem('swc_scan_tip','1');}catch(e){}
+    },1500);
   }
 }
 
