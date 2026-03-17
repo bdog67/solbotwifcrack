@@ -1603,109 +1603,196 @@ async function doScan(){
   var btn=document.getElementById('bscan');if(!btn)return;
   btn.disabled=true;btn.innerHTML='<span class="spin">&#x21BA;</span> Scanning...';
   var hasKey=!!(CFG.anthropicKey&&CFG.anthropicKey.length>10);
-  setNS(hasKey?'AI scanning Pump.fun + DexScreener...':'Scanning DexScreener (add API key in Settings for AI)');
-  var dErr=document.getElementById('d-err'),dEmpty=document.getElementById('d-empty'),dLoad=document.getElementById('d-loading'),dRes=document.getElementById('d-results');
-  if(dErr)dErr.style.display='none';if(dEmpty)dEmpty.style.display='none';if(dRes)dRes.style.display='none';if(dLoad)dLoad.style.display='block';
-  var shim=document.getElementById('d-shim');if(shim){shim.innerHTML='';for(var _si=0;_si<6;_si++){var _sd=document.createElement('div');_sd.className='shimmer';_sd.style.height='280px';_sd.style.borderRadius='14px';shim.appendChild(_sd);}}
-  try{
-    var coins=[];
+  setNS(hasKey?'AI scanning Pump.fun + DexScreener...':'Scanning DexScreener...');
+  var dErr=document.getElementById('d-err'),dEmpty=document.getElementById('d-empty');
+  var dLoad=document.getElementById('d-loading'),dRes=document.getElementById('d-results');
+  if(dErr)dErr.style.display='none';
+  if(dEmpty)dEmpty.style.display='none';
+  if(dRes)dRes.style.display='none';
+  if(dLoad)dLoad.style.display='block';
+  var shim=document.getElementById('d-shim');
+  if(shim){shim.innerHTML='';for(var _si=0;_si<6;_si++){var _sd=document.createElement('div');_sd.className='shimmer';_sd.style.cssText='height:280px;border-radius:14px;margin-bottom:10px';shim.appendChild(_sd);}}
+
+  var coins=[];
+
+  // ── DexScreener: try multiple endpoints ─────────────────────
+  var dexUrls=[
+    'https://api.dexscreener.com/latest/dex/search?q=solana+meme+coin',
+    'https://api.dexscreener.com/latest/dex/search?q=pump+fun+solana',
+    'https://api.dexscreener.com/latest/dex/search?q=solana+new+token'
+  ];
+
+  for(var _di=0;_di<dexUrls.length&&coins.length<6;_di++){
     try{
-      var _br=await fetchWithTimeout('https://api.dexscreener.com/token-boosts/top/v1', 10000);
-      if(_br.ok){
+      var _r=await fetchWithTimeout(dexUrls[_di],12000);
+      if(_r&&_r.ok){
+        var _d=await _r.json();
+        var _pairs=((_d&&_d.pairs)||[]).filter(function(p){
+          return p&&p.chainId==='solana'&&p.baseToken&&parseFloat(p.priceUsd||0)>0;
+        });
+        _pairs.slice(0,15).forEach(function(p){
+          var sym=(p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+          if(!sym||coins.some(function(c){return c.symbol===sym;}))return;
+          var price=parseFloat(p.priceUsd||0);if(price<=0)return;
+          var now=Date.now(),created=p.pairCreatedAt||0,ageH=created>0?(now-created)/3600000:48;
+          coins.push({
+            symbol:sym,name:p.baseToken.name||sym,
+            contractAddress:p.baseToken.address||'',
+            priceUsd:price,ageHours:Math.max(0,ageH),
+            liquidity:(p.liquidity&&p.liquidity.usd)||0,
+            volume24h:(p.volume&&p.volume.h24)||0,
+            marketCap:parseFloat(p.fdv||0),
+            change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),
+            change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),
+            holders:0,graduated:!!(p.dexId&&p.dexId!=='pumpfun'),
+            source:'dexscreener',description:''
+          });
+        });
+        if(coins.length>=5)break;
+      }
+    }catch(_e){console.warn('DexScreen fetch '+_di+' failed:',_e.message);}
+  }
+
+  // ── Try token boosts endpoint ─────────────────────────────
+  if(coins.length<5){
+    try{
+      var _br=await fetchWithTimeout('https://api.dexscreener.com/token-boosts/top/v1',10000);
+      if(_br&&_br.ok){
         var _bd=await _br.json();
-        var _mints=(_bd||[]).filter(function(t){return t.chainId==='solana'&&t.tokenAddress&&t.tokenAddress.length>20;}).map(function(t){return t.tokenAddress;}).slice(0,12);
+        var _mints=(_bd||[]).filter(function(t){
+          return t.chainId==='solana'&&t.tokenAddress&&t.tokenAddress.length>20;
+        }).map(function(t){return t.tokenAddress;}).slice(0,8);
         if(_mints.length){
-          var _pr=await fetchWithTimeout('https://api.dexscreener.com/tokens/v1/solana/'+_mints.slice(0,10).join(','), 10000);
-          if(_pr.ok){
-            var _pd=await _pr.json();var _pairs=Array.isArray(_pd)?_pd:(_pd&&_pd.pairs?_pd.pairs:[]);
-            var _byMint={};
-            _pairs.forEach(function(p){if(!p||!p.baseToken)return;var m=p.baseToken.address;if(!m)return;var lq=(p.liquidity&&p.liquidity.usd)||0;if(!_byMint[m]||lq>(_byMint[m]._lq||0)){_byMint[m]=p;_byMint[m]._lq=lq;}});
-            Object.values(_byMint).forEach(function(p){
+          var _pr=await fetchWithTimeout('https://api.dexscreener.com/tokens/v1/solana/'+_mints.join(','),10000);
+          if(_pr&&_pr.ok){
+            var _pd=await _pr.json();
+            var _pp=Array.isArray(_pd)?_pd:(_pd&&_pd.pairs?_pd.pairs:[]);
+            _pp.forEach(function(p){
+              if(!p||!p.baseToken)return;
+              var sym=(p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+              if(!sym||coins.some(function(c){return c.symbol===sym;}))return;
               var price=parseFloat(p.priceUsd||0);if(price<=0)return;
-              var sym=(p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);if(!sym)return;
-              if(coins.some(function(c){return c.symbol===sym;}))return;
               var now=Date.now(),created=p.pairCreatedAt||0,ageH=created>0?(now-created)/3600000:48;
-              coins.push({symbol:sym,name:p.baseToken.name||sym,contractAddress:p.baseToken.address||'',priceUsd:price,ageHours:Math.max(0,ageH),liquidity:(p.liquidity&&p.liquidity.usd)||0,volume24h:(p.volume&&p.volume.h24)||0,marketCap:parseFloat(p.fdv||0),change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),holders:0,graduated:!!(p.dexId&&p.dexId!=='pumpfun'),source:'dexscreener',description:''});
+              coins.push({
+                symbol:sym,name:p.baseToken.name||sym,
+                contractAddress:p.baseToken.address||'',
+                priceUsd:price,ageHours:Math.max(0,ageH),
+                liquidity:(p.liquidity&&p.liquidity.usd)||0,
+                volume24h:(p.volume&&p.volume.h24)||0,
+                marketCap:parseFloat(p.fdv||0),
+                change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),
+                change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),
+                holders:0,graduated:!!(p.dexId&&p.dexId!=='pumpfun'),
+                source:'boosted',description:''
+              });
             });
           }
         }
       }
-    }catch(_de){console.warn('DexScreener error:',_de.message);}
-    if(coins.length<5){
-      try{
-        var _sr=await fetchWithTimeout('https://api.dexscreener.com/latest/dex/search?q=solana%20meme', 8000);
-        if(_sr.ok){var _sd2=await _sr.json();((_sd2&&_sd2.pairs)||[]).filter(function(p){return p.chainId==='solana'&&parseFloat(p.priceUsd||0)>0;}).slice(0,10).forEach(function(p){var sym=(p.baseToken&&p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);if(!sym||coins.some(function(c){return c.symbol===sym;}))return;var price=parseFloat(p.priceUsd||0);if(price<=0)return;var now=Date.now(),created=p.pairCreatedAt||0,ageH=created>0?(now-created)/3600000:48;coins.push({symbol:sym,name:(p.baseToken&&p.baseToken.name)||sym,contractAddress:(p.baseToken&&p.baseToken.address)||'',priceUsd:price,ageHours:Math.max(0,ageH),liquidity:(p.liquidity&&p.liquidity.usd)||0,volume24h:(p.volume&&p.volume.h24)||0,marketCap:parseFloat(p.fdv||0),change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),holders:0,graduated:true,source:'dexscreener',description:''});});}
-      }catch(_se){console.warn('DexScreener search error:',_se.message);}
-    }
-    // ── GEM HUNTER scan (ultra-early micro-caps) ─────────────────
-    if(GEM.enabled){
-      try{
-        var _gr=await fetchWithTimeout('https://api.dexscreener.com/latest/dex/search?q=pump+fun+new+solana',8000);
-        if(_gr.ok){
-          var _gd=await _gr.json();
-          var _gp=((_gd&&_gd.pairs)||[])
-            .filter(function(p){
-              if(p.chainId!=='solana') return false;
-              var price=parseFloat(p.priceUsd||0);
-              if(price<=0) return false;
-              var now=Date.now(), created=p.pairCreatedAt||0;
-              var ageH=created>0?(now-created)/3600000:99;
-              var liq=(p.liquidity&&p.liquidity.usd)||0;
-              var mc=parseFloat(p.fdv||0);
-              return ageH<GEM.maxAge && liq>=GEM.minLiq && liq<=GEM.maxLiq && (mc<GEM.maxMarketCap||mc===0);
-            }).slice(0,15);
-          _gp.forEach(function(p){
-            var sym=(p.baseToken&&p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
-            if(!sym||coins.some(function(c){return c.symbol===sym;})) return;
-            var price=parseFloat(p.priceUsd||0); if(price<=0) return;
-            var now=Date.now(), created=p.pairCreatedAt||0, ageH=created>0?(now-created)/3600000:48;
-            var coin={symbol:sym,name:(p.baseToken&&p.baseToken.name)||sym,
-              contractAddress:(p.baseToken&&p.baseToken.address)||'',
-              priceUsd:price, ageHours:Math.max(0,ageH),
-              liquidity:(p.liquidity&&p.liquidity.usd)||0,
-              volume24h:(p.volume&&p.volume.h24)||0,
-              marketCap:parseFloat(p.fdv||0),
-              change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),
-              change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),
-              holders:0, graduated:false, source:'gem', description:'Ultra-early gem candidate'};
-            coins.push(coin);
-          });
-        }
-      } catch(_ge){console.warn('Gem scan error:',_ge.message);}
-    }
-
-    if(hasKey){
-      try{
-        var _ex=coins.map(function(c){return c.symbol;}).join(', ');
-        var _prompt=GEM.enabled
-          ?'Search Pump.fun for brand new Solana tokens under 6 hours old with market cap under $500K. '+
-           'Look for coins with explosive volume (vol > 2x liquidity), tiny market caps under $100K, '+
-           'and strong initial momentum. These are potential 2000x gems. '+
-           (_ex?'Already have: '+_ex+'. Find DIFFERENT ones. ':'')+
-           'Return ONLY raw JSON (no markdown): [{"symbol":"TICKER","name":"Name","contractAddress":"solana_address",'+
-           '"priceUsd":0.000001,"ageHours":1.5,"liquidity":15000,"volume24h":45000,"marketCap":50000,'+
-           '"change1h":350,"change24h":800,"holders":120,"graduated":false,"description":"why 2000x potential"}] '+
-           'Return 6-10 real brand-new coins.'
-          :'Search Pump.fun and DexScreener for new Solana meme coins with strong momentum right now.'+(_ex?' Already have: '+_ex+'. Find different ones. ':'')+' Return ONLY a raw JSON array (no markdown): [{"symbol":"TICKER","name":"Name","contractAddress":"address","priceUsd":0.001,"ageHours":8,"liquidity":80000,"volume24h":200000,"marketCap":300000,"change1h":45,"change24h":180,"holders":350,"graduated":true,"description":"why trending"}] Return 8-12 real coins.';
-        var _aiTxt=await callClaude(_prompt);var _aiArr=extractArr(_aiTxt);
-        if(_aiArr&&_aiArr.length){_aiArr.forEach(function(c){var sym=(c.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);if(!sym||coins.some(function(x){return x.symbol===sym;}))return;coins.push({symbol:sym,name:c.name||sym,contractAddress:c.contractAddress||c.address||'',priceUsd:Math.abs(parseFloat(c.priceUsd)||0),ageHours:Math.abs(parseFloat(c.ageHours)||0),liquidity:Math.abs(parseFloat(c.liquidity)||0),volume24h:Math.abs(parseFloat(c.volume24h)||0),marketCap:Math.abs(parseFloat(c.marketCap)||0),change1h:c.change1h!=null?parseFloat(c.change1h):null,change24h:c.change24h!=null?parseFloat(c.change24h):null,holders:Math.abs(parseInt(c.holders)||0),graduated:!!c.graduated,source:'ai',description:c.description||''});});}
-      }catch(_ae){console.warn('AI scan error:',_ae.message);if(coins.length===0)throw _ae;}
-    }
-    if(coins.length===0)throw new Error('No coins found from DexScreener.'+(hasKey?'':' Add an Anthropic API key in Settings for AI scanning.'));
-    S.coins=coins;S.lastScan=new Date();
-    S.coins.forEach(function(c){S.scores[c.symbol]=scoreC(c,S.rugs[c.symbol]||null);});
-    S.coins.sort(function(a,b){return(S.scores[b.symbol]||0)-(S.scores[a.symbol]||0);});
-    if(dLoad)dLoad.style.display='none';if(dRes)dRes.style.display='block';
-    var _dc=document.getElementById('d-count');if(_dc)_dc.textContent=S.coins.length+' coins found';
-    var _bdEl=document.getElementById('bd');if(_bdEl){_bdEl.textContent=S.coins.length;_bdEl.style.display='';}
-    renderCoins();if(S.coins.length&&!localStorage.getItem('swc_scan_tip')){setTimeout(function(){toast('💡 Coins with ⚡ Signal are the bot\'s top picks!');try{localStorage.setItem('swc_scan_tip','1');}catch(e){}},1200);}setNS('Found '+S.coins.length+' coins'+(hasKey?' (AI+DexScreener)':' (DexScreener)')+' · '+S.lastScan.toLocaleTimeString());
-    updateAll();if(S.autoBot)runBot();
-    S.coins.filter(function(c){return c.contractAddress;}).slice(0,12).forEach(function(c,idx){if(!S.rugs[c.symbol]&&!S.checking[c.symbol])setTimeout(function(){doRug(c);},900*(idx+1));});
-  }catch(err){
-    if(dLoad)dLoad.style.display='none';if(dErr){dErr.style.display='block';dErr.textContent='Scan failed: '+err.message;}if(dEmpty)dEmpty.style.display='block';setNS('Scan failed');console.error('Scan error:',err);
+    }catch(_be){console.warn('Boosts fetch failed:',_be.message);}
   }
+
+  // ── AI scan via Claude if key set ────────────────────────────
+  if(hasKey){
+    try{
+      setNS('AI scanning for hot coins...');
+      var _ex=coins.map(function(c){return c.symbol;}).join(', ');
+      var _prompt=GEM.enabled
+        ?'Search Pump.fun for brand new Solana tokens under 6 hours old under $500K market cap. '+
+         'Return ONLY raw JSON array (no markdown, no explanation): [{\"symbol\":\"TICKER\",\"name\":\"Name\",'+
+         '\"contractAddress\":\"addr\",\"priceUsd\":0.000001,\"ageHours\":1.5,\"liquidity\":15000,'+
+         '\"volume24h\":45000,\"marketCap\":50000,\"change1h\":350,\"change24h\":800,\"holders\":120,'+
+         '\"graduated\":false,\"description\":\"brief reason\"}]'+(_ex?' Already have: '+_ex+'. Find different ones.':'')
+        :'Search DexScreener and Pump.fun for trending Solana meme coins right now with strong momentum. '+
+         'Return ONLY raw JSON array (no markdown): [{\"symbol\":\"TICKER\",\"name\":\"Name\",'+
+         '\"contractAddress\":\"addr\",\"priceUsd\":0.001,\"ageHours\":8,\"liquidity\":80000,'+
+         '\"volume24h\":200000,\"marketCap\":300000,\"change1h\":45,\"change24h\":180,\"holders\":350,'+
+         '\"graduated\":true,\"description\":\"why trending\"}]'+(_ex?' Already have: '+_ex+'. Find different ones.':'');
+      var _aiTxt=await callClaude(_prompt,2000);
+      var _aiArr=extractArr(_aiTxt);
+      if(_aiArr&&_aiArr.length){
+        _aiArr.forEach(function(c){
+          var sym=(c.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+          if(!sym||coins.some(function(x){return x.symbol===sym;}))return;
+          coins.push({
+            symbol:sym,name:c.name||sym,
+            contractAddress:c.contractAddress||c.address||'',
+            priceUsd:Math.abs(parseFloat(c.priceUsd)||0),
+            ageHours:Math.abs(parseFloat(c.ageHours)||0),
+            liquidity:Math.abs(parseFloat(c.liquidity)||0),
+            volume24h:Math.abs(parseFloat(c.volume24h)||0),
+            marketCap:Math.abs(parseFloat(c.marketCap)||0),
+            change1h:c.change1h!=null?parseFloat(c.change1h):0,
+            change24h:c.change24h!=null?parseFloat(c.change24h):0,
+            holders:Math.abs(parseInt(c.holders)||0),
+            graduated:!!c.graduated,source:'ai',description:c.description||''
+          });
+        });
+      }
+    }catch(_ae){console.warn('AI scan error:',_ae.message);}
+  }
+
+  // ── Gem Hunter ───────────────────────────────────────────────
+  if(GEM.enabled&&coins.length<20){
+    try{
+      var _gr=await fetchWithTimeout('https://api.dexscreener.com/latest/dex/search?q=pump+fun+new+solana',8000);
+      if(_gr&&_gr.ok){
+        var _gd=await _gr.json();
+        ((_gd&&_gd.pairs)||[]).filter(function(p){
+          if(p.chainId!=='solana') return false;
+          var price=parseFloat(p.priceUsd||0);if(price<=0)return false;
+          var now=Date.now(),created=p.pairCreatedAt||0,ageH=created>0?(now-created)/3600000:99;
+          var liq=(p.liquidity&&p.liquidity.usd)||0,mc=parseFloat(p.fdv||0);
+          return ageH<GEM.maxAge&&liq>=GEM.minLiq&&liq<=GEM.maxLiq&&(mc<GEM.maxMarketCap||mc===0);
+        }).slice(0,8).forEach(function(p){
+          var sym=(p.baseToken&&p.baseToken.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,12);
+          if(!sym||coins.some(function(c){return c.symbol===sym;}))return;
+          var price=parseFloat(p.priceUsd||0);if(price<=0)return;
+          var now=Date.now(),created=p.pairCreatedAt||0,ageH=created>0?(now-created)/3600000:48;
+          coins.push({symbol:sym,name:(p.baseToken&&p.baseToken.name)||sym,
+            contractAddress:(p.baseToken&&p.baseToken.address)||'',
+            priceUsd:price,ageHours:Math.max(0,ageH),
+            liquidity:(p.liquidity&&p.liquidity.usd)||0,
+            volume24h:(p.volume&&p.volume.h24)||0,
+            marketCap:parseFloat(p.fdv||0),
+            change1h:parseFloat((p.priceChange&&p.priceChange.h1)||0),
+            change24h:parseFloat((p.priceChange&&p.priceChange.h24)||0),
+            holders:0,graduated:false,source:'gem',description:'Gem candidate'});
+        });
+      }
+    }catch(_ge){console.warn('Gem scan error:',_ge.message);}
+  }
+
+  if(dLoad)dLoad.style.display='none';
+
+  if(coins.length===0){
+    var errMsg='No coins found. '+(hasKey?'Check console for errors.':'Add an Anthropic API key in Settings → Setup for AI scanning.');
+    if(dErr){dErr.style.display='block';dErr.innerHTML='<b>Scan returned no results.</b><br>'+errMsg+'<br><small style="color:var(--text3)">DexScreener may be temporarily unavailable. Try again in 30 seconds.</small>';}
+    if(dEmpty)dEmpty.style.display='block';
+    setNS('Scan returned no coins — try again');
+    btn.disabled=false;btn.innerHTML='&#x1F50D; Scan';
+    return;
+  }
+
+  S.coins=coins;S.lastScan=new Date();
+  S.coins.forEach(function(c){S.scores[c.symbol]=scoreC(c,S.rugs[c.symbol]||null);});
+  S.coins.sort(function(a,b){return(S.scores[b.symbol]||0)-(S.scores[a.symbol]||0);});
+  if(dRes)dRes.style.display='block';
+  var _dc=document.getElementById('d-count');if(_dc)_dc.textContent=S.coins.length+' coins found';
+  var _bdEl=document.getElementById('bd');if(_bdEl){_bdEl.textContent=S.coins.length;_bdEl.style.display='';}
+  renderCoins();
+  if(S.coins.length&&!localStorage.getItem('swc_scan_tip')){
+    setTimeout(function(){toast('💡 Coins with ⚡ Signal are the top picks!');try{localStorage.setItem('swc_scan_tip','1');}catch(e){}},1200);
+  }
+  setNS('Found '+S.coins.length+' coins'+(hasKey?' (AI+DexScreener)':' (DexScreener)')+' · '+S.lastScan.toLocaleTimeString());
+  updateAll();
+  if(S.autoBot)runBot();
+  S.coins.filter(function(c){return c.contractAddress;}).slice(0,12).forEach(function(c,idx){
+    if(!S.rugs[c.symbol]&&!S.checking[c.symbol])setTimeout(function(){doRug(c);},900*(idx+1));
+  });
   btn.disabled=false;btn.innerHTML='&#x1F50D; Scan';
 }
+
 
 async function doRug(coin){
   if(!coin||!coin.contractAddress)return;
